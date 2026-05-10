@@ -1,0 +1,209 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Live Location Sharing</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial;
+        background: #0f172a;
+        color: white;
+      }
+
+      h1 {
+        text-align: center;
+      }
+
+      #map {
+        height: 100vh;
+      }
+      .controls {
+        position: absolute;
+        top: 10px;
+        right: 0px;
+        transform: translateX(-50%);
+        z-index: 1000;
+
+        background: rgba(15, 23, 42, 0.9);
+        padding: 8px 10px;
+        border-radius: 10px;
+
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .top-bar {
+        display: flex;
+        gap: 6px;
+      }
+
+      button {
+        padding: 6px 10px;
+        font-size: 12px;
+        border-radius: 6px;
+      }
+
+      .link-box {
+        font-size: 10px;
+        max-width: 220px;
+        text-align: center;
+        word-break: break-all;
+        opacity: 0.8;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="controls">
+      <h1>📍 Share Live Location</h1>
+      <div class="top-bar">
+        <button class="start" onclick="startSharing()">Start</button>
+        <button class="copy" onclick="copyLink()">Copy</button>
+        <button class="stop" onclick="stopApp()">Stop</button>
+      </div>
+
+      <div class="link-box" id="linkBox"></div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+      let socket = null;
+      let roomId = null;
+      let watchId = null;
+      let myMarker = null;
+      let markers = {};
+
+      const map = L.map("map").setView([20.5937, 78.9629], 5);
+
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+      }).addTo(map);
+
+      function generateRoomId() {
+        return Math.random().toString(36).substring(2, 8);
+      }
+
+      function getRoomFromURL() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get("room");
+      }
+
+      function connectSocketAndStart() {
+        socket = io();
+
+        socket.on("connect", () => {
+          console.log("Connected:", socket.id);
+
+          socket.emit("join:room", roomId);
+
+          startTracking();
+        });
+
+        socket.on("server:location:update", (data) => {
+          const { id, latitude, longitude } = data;
+
+          if (id === socket.id) return;
+
+          if (markers[id]) {
+            markers[id].setLatLng([latitude, longitude]);
+          } else {
+            markers[id] = L.marker([latitude, longitude])
+              .addTo(map)
+              .bindPopup("👤 Friend");
+          }
+        });
+      }
+
+      function startTracking() {
+        if (!navigator.geolocation) {
+          alert("Geolocation not supported");
+          return;
+        }
+
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const { latitude, longitude } = pos.coords;
+
+            map.setView([latitude, longitude], 15);
+
+            if (!myMarker) {
+              myMarker = L.marker([latitude, longitude])
+                .addTo(map)
+                .bindPopup("📍 You")
+                .openPopup();
+            } else {
+              myMarker.setLatLng([latitude, longitude]);
+            }
+
+            // ✅ always send roomId
+            socket.emit("client:location:update", {
+              latitude,
+              longitude,
+              roomId,
+            });
+          },
+          (err) => console.error(err),
+          { enableHighAccuracy: true },
+        );
+      }
+
+      function startSharing() {
+        const urlRoom = getRoomFromURL();
+
+        roomId = urlRoom || generateRoomId();
+
+        const shareLink = `${window.location.origin}/?room=${roomId}`;
+        document.getElementById("linkBox").innerText = shareLink;
+
+        console.log("START ROOM:", roomId);
+
+        connectSocketAndStart();
+      }
+
+      function copyLink() {
+        const text = document.getElementById("linkBox").innerText;
+
+        if (!text) return alert("Start sharing first!");
+
+        navigator.clipboard.writeText(text);
+        alert("Link copied!");
+      }
+
+      function stopApp() {
+        if (watchId) navigator.geolocation.clearWatch(watchId);
+        if (socket) socket.disconnect();
+
+        if (myMarker) map.removeLayer(myMarker);
+        Object.values(markers).forEach((m) => map.removeLayer(m));
+
+        markers = {};
+      }
+
+      // ✅ AUTO JOIN when link opened
+      window.onload = () => {
+        const urlRoom = getRoomFromURL();
+
+        if (urlRoom) {
+          roomId = urlRoom;
+
+          document.getElementById("linkBox").innerText =
+            `${window.location.origin}/?room=${roomId}`;
+
+          connectSocketAndStart();
+        }
+      };
+    </script>
+  </body>
+</html>
